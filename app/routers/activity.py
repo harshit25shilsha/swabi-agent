@@ -10,11 +10,13 @@ router = APIRouter(
 
 @router.get("/")
 async def activities(
+    country: str = None,
     state: str = None,
     category: str = None
 ):
 
     return await search_activities(
+        country = country,
         state=state,
         category=category
     )
