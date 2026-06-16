@@ -8,9 +8,11 @@ async def get_all_activities():
 
 
 async def search_activities(
-    country: str = None,
-    state: str = None,
-    category: str = None
+    country=None,
+    state=None,
+    city=None,
+    category=None,
+    max_price=None
 ):
     data = await get_all_activities()
 
@@ -20,17 +22,46 @@ async def search_activities(
 
     for activity in activities:
 
-        # Filter by country
-        if country and activity.get("country") != country:
+        # Country filter
+        if country and (
+            activity.get("country", "").lower()
+            != country.lower()
+        ):
             continue
 
-        # Filter by state
-        if state and activity.get("state") != state:
+        # State filter
+        if state and (
+            activity.get("state", "").lower()
+            != state.lower()
+        ):
             continue
 
-        # Filter by category
-        if category and activity.get("activityCategory") != category:
+        # Category filter
+        if category and (
+            activity.get("activityCategory", "").lower()
+            != category.lower()
+        ):
             continue
+
+        # City filter
+        if city and (
+            activity.get("city", "").lower()
+            != city.lower()
+        ):
+            continue
+
+        # Price filter
+        if max_price:
+
+            activity_price = activity.get("price", 0)
+
+            try:
+                activity_price = float(activity_price)
+            except Exception:
+                activity_price = 0
+
+            if activity_price > max_price:
+                continue
 
         results.append(activity)
 

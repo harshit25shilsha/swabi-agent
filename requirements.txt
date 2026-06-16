@@ -3,3 +3,7 @@ uvicorn
 langchain-groq
 python-dotenv
 pydantic-settings
+langgraph
+langchain
+langchain-core
+langchain-community
