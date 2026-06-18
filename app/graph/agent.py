@@ -6,7 +6,7 @@ from langgraph.prebuilt import ToolNode
 from app.graph.state import AgentState
 
 from langchain_core.messages import SystemMessage
-from app.graph.prompts import SYSTEM_PROMPT
+from app.graph.prompts import build_system_prompt
 
 from langgraph.graph import (
     StateGraph,
@@ -23,7 +23,7 @@ llm_with_tools = llm.bind_tools(tools)
 async def chatbot(state):
 
     messages = [
-        SystemMessage(content=SYSTEM_PROMPT),
+        SystemMessage(content=build_system_prompt(state.get("user_id"))),
         *state["messages"]
     ]
 

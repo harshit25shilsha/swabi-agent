@@ -7,6 +7,19 @@ async def get_all_activities():
     )
 
 
+async def get_activity_categories():
+    """
+    Fetch the canonical list of Swabi activity/package category names
+    (e.g. "Adventure", "Hiking", "Religious & Pilgrim Tours"). The agent
+    should consult this before guessing a category for a filtered search,
+    since an incorrect category name causes search_activities /
+    search_packages to silently return zero results rather than an error.
+    """
+    return await swabi_client.get(
+        "/activity_category"
+    )
+
+
 async def search_activities(
     country=None,
     state=None,
@@ -43,21 +56,20 @@ async def search_activities(
         ):
             continue
 
-        # City filter
-        if city and (
-            activity.get("city", "").lower()
-            != city.lower()
-        ):
-            continue
+       
+        if city:
+            activity_city = activity.get("city", "")
+            if not activity_city or city.lower() not in activity_city.lower():
+                continue
 
-        # Price filter
-        if max_price:
+        
+        if max_price is not None:
 
-            activity_price = activity.get("price", 0)
+            activity_price = activity.get("activityPrice", 0)
 
             try:
                 activity_price = float(activity_price)
-            except Exception:
+            except (TypeError, ValueError):
                 activity_price = 0
 
             if activity_price > max_price:
