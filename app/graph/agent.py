@@ -13,6 +13,8 @@ from langgraph.graph import (
     START
 )
 
+from langgraph.checkpoint.memory import MemorySaver
+
 # Bind Tools To Groq
 
 llm_with_tools = llm.bind_tools(tools)
@@ -83,4 +85,13 @@ builder.add_edge(
     "chatbot"
 )
 
-graph = builder.compile()
+# CheckPointer enables conversation memory: Langgraph will persist 
+
+# MemorySaver is IN-Memory Only : History live in this Python
+# process's memory and is lost on restart (including uvicorn --reload)
+
+checkpointer = MemorySaver()
+
+graph = builder.compile(
+    checkpointer = checkpointer
+)

@@ -8,3 +8,4 @@ test_phase1_filters.py
 manual_agent_smoketest.py
 test_phase1_routers.py
 test_phase2_personalization.py
+test_phase3_memory.py

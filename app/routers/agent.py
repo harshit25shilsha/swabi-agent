@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
@@ -36,10 +38,71 @@ class AgentRequest(BaseModel):
             "user's booking history, search history, and stated preferences. "
             "Omit this for guest users or when the frontend hasn't resolved "
             "a logged-in user yet — the agent will ask for it conversationally "
-            "if it's needed and missing."
+            "if it's needed and missing. Once set for a session, it carries "
+            "forward to later turns in that same session even if omitted."
         ),
         examples=[2, 3]
     )
+
+    session_id: str = Field(
+        None,
+        description=(
+            "Identifies this conversation so the agent remembers earlier "
+            "turns within it. Pass the same session_id on every request in "
+            "the same conversation; omit it on the first message of a new "
+            "conversation and the server will generate one, returned in "
+            "the response — store it and send it back on subsequent turns. "
+            "Different sessions never share message history, even for the "
+            "same user_id."
+        ),
+        examples=["b3f1c2a4-7e21-4c3a-9d3f-2a6b7c8d9e10"]
+    )
+
+
+@ router.get(
+    "/debug/session/{session_id}",
+    summary = "[DEBUG] Inspect a session's stored conversation state",
+    description=(
+        "Developer-only endpoint to inspect what's currently checkpointed "
+        "for a session_id (message history, stored user_id) WITHOUT calling "
+        "Groq. Useful for confirming memory/session behavior when you're "
+        "rate-limited or just want to verify state server-side. "
+        "Consider removing this endpoint before any real deployment — it "
+        "exposes raw conversation content with no auth check."
+    )
+)
+
+async def debug_session_state(
+    session_id: str
+):
+    config ={
+        "configurable": {
+            "thread_id": session_id
+        }
+    }
+    state = await graph.aget_state(config)
+    
+    if not state or not state.values:
+        return {
+            "Session_id": session_id,
+            "found": False,
+            "message": "No checkpoint exists yet for this session_id."
+        }
+    messages = state.values.get("messages", [])
+    
+    return {
+        "session_id": session_id,
+        "found": True,
+        "stored_user_id": state.values.get("user_id"),
+        "message_count": len(messages),
+        "messages":[
+            {
+                "role": type(m).__name__,
+                "content":getattr(m, "content","")
+            }
+            for m in messages
+        ]
+    }
 
 
 @router.post(
@@ -48,7 +111,8 @@ class AgentRequest(BaseModel):
     description=(
         "Send a travel query to the Swabi AI Agent. The agent can search "
         "activities, search packages, fetch package details, and recommend trips. "
-        "Pass user_id to enable personalized recommendations. "
+        "Pass user_id to enable personalized recommendations, and session_id to "
+        "maintain conversation memory across multiple turns. "
         "Try: 'Show adventure activities in Uttarakhand' or "
         "'Show package details for package 4'."
     )
@@ -56,6 +120,29 @@ class AgentRequest(BaseModel):
 async def agent_chat(
     request: AgentRequest
 ):
+
+    # Generate a session_id for the caller if they didn't send one (e.g.
+    # first message of a new conversation). The frontend should store
+    # whatever session_id comes back in the response and resend it on
+    # every later turn of the same conversation.
+    session_id = request.session_id or str(uuid.uuid4())
+
+    config = {
+        "configurable": {
+            "thread_id": session_id
+        }
+    }
+
+    
+    resolved_user_id = request.user_id
+
+    if resolved_user_id is None:
+        try:
+            existing_state = await graph.aget_state(config)
+            if existing_state and existing_state.values:
+                resolved_user_id = existing_state.values.get("user_id")
+        except Exception:
+            pass
 
     try:
         result = await graph.ainvoke(
@@ -65,12 +152,13 @@ async def agent_chat(
                         content=request.message
                     )
                 ],
-                "user_id": request.user_id
-            }
+                "user_id": resolved_user_id
+            },
+            config=config
         )
 
     except APIStatusError as e:
-
+        
         return JSONResponse(
             status_code=502,
             content={
@@ -79,11 +167,12 @@ async def agent_chat(
                     "request. Could you try rephrasing it, or asking again?"
                 ),
                 "error": "llm_tool_call_failed",
-                "detail": str(e)
+                "detail": str(e),
+                "session_id": session_id
             }
         )
 
     return {
-        "response":
-            result["messages"][-1].content
+        "response": result["messages"][-1].content,
+        "session_id": session_id
     }
