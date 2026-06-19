@@ -1,13 +1,12 @@
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from langchain_core.messages import HumanMessage
 
 from groq import APIStatusError
 
-from app.graph.agent import graph
 from pydantic import BaseModel, Field
 
 
@@ -59,9 +58,9 @@ class AgentRequest(BaseModel):
     )
 
 
-@ router.get(
+@router.get(
     "/debug/session/{session_id}",
-    summary = "[DEBUG] Inspect a session's stored conversation state",
+    summary="[DEBUG] Inspect a session's stored conversation state",
     description=(
         "Developer-only endpoint to inspect what's currently checkpointed "
         "for a session_id (message history, stored user_id) WITHOUT calling "
@@ -71,34 +70,39 @@ class AgentRequest(BaseModel):
         "exposes raw conversation content with no auth check."
     )
 )
-
 async def debug_session_state(
+    request: Request,
     session_id: str
 ):
-    config ={
+
+    graph = request.app.state.graph
+
+    config = {
         "configurable": {
             "thread_id": session_id
         }
     }
+
     state = await graph.aget_state(config)
-    
+
     if not state or not state.values:
         return {
-            "Session_id": session_id,
+            "session_id": session_id,
             "found": False,
             "message": "No checkpoint exists yet for this session_id."
         }
+
     messages = state.values.get("messages", [])
-    
+
     return {
         "session_id": session_id,
         "found": True,
         "stored_user_id": state.values.get("user_id"),
         "message_count": len(messages),
-        "messages":[
+        "messages": [
             {
                 "role": type(m).__name__,
-                "content":getattr(m, "content","")
+                "content": getattr(m, "content", "")
             }
             for m in messages
         ]
@@ -118,14 +122,14 @@ async def debug_session_state(
     )
 )
 async def agent_chat(
-    request: AgentRequest
+    request: Request,
+    body: AgentRequest
 ):
 
-    # Generate a session_id for the caller if they didn't send one (e.g.
-    # first message of a new conversation). The frontend should store
-    # whatever session_id comes back in the response and resend it on
-    # every later turn of the same conversation.
-    session_id = request.session_id or str(uuid.uuid4())
+    graph = request.app.state.graph
+
+    
+    session_id = body.session_id or str(uuid.uuid4())
 
     config = {
         "configurable": {
@@ -133,8 +137,8 @@ async def agent_chat(
         }
     }
 
-    
-    resolved_user_id = request.user_id
+   
+    resolved_user_id = body.user_id
 
     if resolved_user_id is None:
         try:
@@ -142,6 +146,8 @@ async def agent_chat(
             if existing_state and existing_state.values:
                 resolved_user_id = existing_state.values.get("user_id")
         except Exception:
+            # No prior checkpoint for this thread_id yet (new session) —
+            # nothing to fall back to, proceed with user_id=None.
             pass
 
     try:
@@ -149,7 +155,7 @@ async def agent_chat(
             {
                 "messages": [
                     HumanMessage(
-                        content=request.message
+                        content=body.message
                     )
                 ],
                 "user_id": resolved_user_id
@@ -158,7 +164,7 @@ async def agent_chat(
         )
 
     except APIStatusError as e:
-        
+      
         return JSONResponse(
             status_code=502,
             content={

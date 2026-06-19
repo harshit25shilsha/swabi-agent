@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     GROQ_MODEL: str
     
     SWABI_API_BASE: str
+    
+    CHECKPOINT_DB_PATH: str = "swabi_checkpoints.db"
 
     class Config:
         env_file = ".env"

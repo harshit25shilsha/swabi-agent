@@ -50,48 +50,57 @@ tool_node = ToolNode(
     tools=tools
 )
 
-# Build Graph
 
-builder = StateGraph(
-    AgentState
-)
+def build_graph(checkpointer):
+    """
+    Build and compile the agent graph with the given checkpointer.
 
-builder.add_node(
-    "chatbot",
-    chatbot
-)
+    Kept as a factory function (rather than only a module-level
+    compiled graph) so the app can choose its checkpointer at startup —
+    an in-memory MemorySaver for quick local testing, or a persistent
+    AsyncSqliteSaver (see app/main.py) for conversation history that
+    survives a server restart. Different checkpointers are NOT
+    interchangeable after compile time, so the choice has to be made
+    before compiling, not patched in afterward.
+    """
 
-builder.add_node(
-    "tools",
-    tool_node
-)
+    builder = StateGraph(
+        AgentState
+    )
 
-builder.add_edge(
-    START,
-    "chatbot"
-)
+    builder.add_node(
+        "chatbot",
+        chatbot
+    )
 
-# Conditional edge
+    builder.add_node(
+        "tools",
+        tool_node
+    )
 
-builder.add_conditional_edges(
-    "chatbot",
-    tools_condition
-)
+    builder.add_edge(
+        START,
+        "chatbot"
+    )
 
-# Tool returns to chatbot
+    # Conditional edge
 
-builder.add_edge(
-    "tools",
-    "chatbot"
-)
+    builder.add_conditional_edges(
+        "chatbot",
+        tools_condition
+    )
 
-# CheckPointer enables conversation memory: Langgraph will persist 
+    # Tool returns to chatbot
 
-# MemorySaver is IN-Memory Only : History live in this Python
-# process's memory and is lost on restart (including uvicorn --reload)
+    builder.add_edge(
+        "tools",
+        "chatbot"
+    )
 
-checkpointer = MemorySaver()
+    return builder.compile(
+        checkpointer=checkpointer
+    )
 
-graph = builder.compile(
-    checkpointer = checkpointer
-)
+
+
+graph = build_graph(MemorySaver())

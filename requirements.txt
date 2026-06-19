@@ -8,3 +8,6 @@ langgraph
 langchain
 langchain-core
 langchain-community
+langgraph-checkpoint-sqlite
+aiosqlite
+
