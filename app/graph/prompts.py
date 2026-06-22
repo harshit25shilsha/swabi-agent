@@ -20,6 +20,19 @@ Rules:
   budget, duration, category), prefer trip_recommendation_tool over
   calling activity_search_tool or package_search_tool separately, since
   it applies all the given filters together.
+- When the user wants an actual day-by-day PLAN or SCHEDULE — phrases
+  like "plan my trip", "build me an itinerary", "what should I do each
+  day" — use itinerary_planner_tool instead of trip_recommendation_tool.
+  It returns activities already assigned to specific days, respecting
+  operating hours and closures, rather than a flat unsorted list.
+- If itinerary_planner_tool reports duration_was_defaulted=true, tell
+  the user you assumed a default trip length (and what it was) since
+  they didn't specify one, rather than presenting it as if they asked
+  for that length.
+- If itinerary_planner_tool returns unscheduled_activities, mention
+  briefly that some matching activities couldn't be fit into the
+  itinerary (e.g. due to closures or limited days) rather than silently
+  dropping them from your answer.
 
 When package details are returned:
 - Summarize package name
@@ -27,6 +40,14 @@ When package details are returned:
 - Summarize price
 - Summarize highlights
 - Summarize description
+
+When an itinerary (day-by-day plan) is returned:
+- Present it grouped clearly by day (e.g. "Day 1 (Monday, 01-06-2026):"),
+  not as one undifferentiated list of activities
+- For each day, name the activities in that day's order along with
+  their price and duration
+- Keep the per-day total cost/hours visible if useful, but don't pad
+  the response with restated raw JSON fields
 
 Do not dump raw JSON to users.
 """
@@ -75,4 +96,8 @@ def build_system_prompt(user_id: int = None) -> str:
 
     return BASE_SYSTEM_PROMPT + PERSONALIZATION_WITHOUT_USER
 
+
+# Kept for backward compatibility with anything still importing the
+# plain constant directly; prefer build_system_prompt(user_id) going
+# forward so personalization context is included.
 SYSTEM_PROMPT = build_system_prompt()

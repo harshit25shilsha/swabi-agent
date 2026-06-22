@@ -10,6 +10,7 @@ from app.tools.user_tools import (
     get_user_profile
 )
 
+from app.tools.itinerary_tools import build_itinerary
 
 async def recommend_trip(
     destination: str = None,
@@ -128,3 +129,84 @@ async def personalized_recommend_trip(
     }
 
     return result
+
+
+DEFAULT_ITINERARY_DURATION = 3
+
+async def build_trip_itinerary(
+    destination: str = None,
+    category: str = None,
+    country: str = None,
+    state: str = None,
+    max_budget : float = None,
+    duration: int = None,
+    start_date: str = None,
+    user_id: int = None
+):
+    """
+    The real multi-tool orchestration step: finds matching activities
+    (and packages, for reference/pricing context) via the existing
+    search tools, THEN assembles the activities into an actual
+    day-by-day schedule via build_itinerary, respecting each
+    activity's operating hours, weekly off-days, and blackout dates.
+
+    This is what turns "here are some activities and some packages,
+    good luck" into an actual structured travel plan — previously
+    recommend_trip / personalized_recommend_trip only returned flat,
+    unordered lists with no notion of which day anything happens on.
+
+    If user_id is given, activity/package search is personalized via
+    the same precedence rules as personalized_recommend_trip (explicit
+    args > booking history > search history > stated preferences).
+
+    duration defaults to 3 days if not given, since itinerary
+    scheduling needs a concrete day count — the resolved duration used
+    is always included in the response so callers (and the LLM) can
+    see when a default was applied rather than something the user
+    actually asked for.
+    """
+    
+    resolved_duration = duration if duration and duration >=1 else DEFAULT_ITINERARY_DURATION
+    
+    if user_id is not None:
+        trip = await personalized_recommend_trip(
+            user_id=user_id,
+            destination=destination,
+            category=category,
+            country = country,
+            state = state,
+            max_budget=max_budget,
+            duration=resolved_duration
+        )
+        
+    else:
+        trip = await recommend_trip(
+            destination=destination,
+            category=category,
+            country=country,
+            state=state,
+            max_budget=max_budget,
+            duration = resolved_duration
+        )
+    schedule = build_itinerary(
+        activities=trip["activities"],
+        duration = resolved_duration,
+        start_date=start_date
+    )
+    
+    return {
+        "duration_used": resolved_duration,
+        "duration_was_defaulted": duration is None or duration < 1,
+        "itinerary": schedule["days"],
+        "unscheduled_activities":schedule["unscheduled_activities"],
+        "packages": trip["packages"],
+        "resolved_filters": trip.get("resolved_filters", {
+            "category": category,
+            "country": country,
+            "state":state,
+            "destination":destination,
+            "source": "explicit"
+        })
+    }
+        
+    

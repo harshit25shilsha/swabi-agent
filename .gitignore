@@ -10,6 +10,7 @@ test_phase1_routers.py
 test_phase2_personalization.py
 test_phase3_memory.py
 test_phase3_persistence.py
+test_itinerary.py
 *.db
 *.db-shm
 *.db-wal

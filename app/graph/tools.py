@@ -1,4 +1,5 @@
 import json
+from typing import Optional
 
 from langchain.tools import tool
 
@@ -14,7 +15,8 @@ from app.tools.package_tools import (
 
 from app.tools.recommendation_tools import (
     recommend_trip,
-    personalized_recommend_trip
+    personalized_recommend_trip,
+    build_trip_itinerary
 )
 
 from app.tools.user_tools import (
@@ -24,11 +26,11 @@ from app.tools.user_tools import (
 
 @tool
 async def activity_search_tool(
-    country: str = None,
-    state: str = None,
-    city: str = None,
-    category: str = None,
-    max_price: float = None
+    country: Optional[str] = None,
+    state: Optional[str] = None,
+    city: Optional[str] = None,
+    category: Optional[str] = None,
+    max_price: Optional[float] = None
 ):
     """
     Search Swabi activities, optionally filtered by country, state, city,
@@ -104,12 +106,12 @@ async def package_detail_tool(
 
 @tool
 async def trip_recommendation_tool(
-    destination: str = None,
-    category: str = None,
-    country: str = None,
-    state: str = None,
-    max_budget: float = None,
-    duration: int = None
+    destination: Optional[str] = None,
+    category: Optional[str] = None,
+    country: Optional[str] = None,
+    state: Optional[str] = None,
+    max_budget: Optional[float] = None,
+    duration: Optional[int] = None
 ):
     """
     Recommend both activities and packages for a trip, filtered by
@@ -193,12 +195,12 @@ async def user_profile_tool(
 @tool
 async def personalized_trip_recommendation_tool(
     user_id: int,
-    destination: str = None,
-    category: str = None,
-    country: str = None,
-    state: str = None,
-    max_budget: float = None,
-    duration: int = None
+    destination: Optional[str] = None,
+    category: Optional[str] = None,
+    country: Optional[str] = None,
+    state: Optional[str] = None,
+    max_budget: Optional[float] = None,
+    duration: Optional[int] = None
 ):
     """
     Like trip_recommendation_tool, but fills in destination/category
@@ -232,6 +234,61 @@ async def personalized_trip_recommendation_tool(
     )
 
 
+@tool
+async def itinerary_planner_tool(
+    destination: Optional[str] = None,
+    category: Optional[str] = None,
+    country: Optional[str] = None,
+    state: Optional[str] = None,
+    max_budget: Optional[float] = None,
+    duration: Optional[int] = None,
+    start_date: Optional[str] = None,
+    user_id: Optional[int] = None
+):
+    """
+    Build an actual day-by-day travel itinerary: finds matching
+    activities and packages, then schedules the activities onto
+    specific days, respecting each activity's operating hours, weekly
+    closures (e.g. closed Sundays), and one-off blackout dates so the
+    plan is genuinely usable rather than just a flat list.
+
+    Use this instead of trip_recommendation_tool /
+    personalized_trip_recommendation_tool whenever the user wants an
+    actual PLAN or SCHEDULE — phrases like "plan my trip", "build me
+    an itinerary", "what should I do each day", "day by day" — rather
+    than just a list of options to browse.
+
+    start_date should be "DD-MM-YYYY" if the user gives one (e.g.
+    "starting June 5th"); if they don't mention a start date, leave
+    this unset and it will default to tomorrow.
+
+    duration defaults to 3 days if the user doesn't specify a trip
+    length — the response always reports which duration was actually
+    used so you can tell the user if a default was applied.
+
+    Pass user_id when known so personalization (booking history,
+    search history, preferences) fills in any destination/category the
+    user didn't explicitly state, same as
+    personalized_trip_recommendation_tool.
+    """
+
+    result = await build_trip_itinerary(
+        destination=destination,
+        category=category,
+        country=country,
+        state=state,
+        max_budget=max_budget,
+        duration=duration,
+        start_date=start_date,
+        user_id=user_id
+    )
+
+    return json.dumps(
+        result,
+        default=str
+    )
+
+
 tools = [
     activity_search_tool,
     package_search_tool,
@@ -239,5 +296,6 @@ tools = [
     trip_recommendation_tool,
     activity_category_list_tool,
     user_profile_tool,
-    personalized_trip_recommendation_tool
+    personalized_trip_recommendation_tool,
+    itinerary_planner_tool
 ]
