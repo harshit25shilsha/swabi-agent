@@ -11,20 +11,19 @@ from app.config import settings
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
+from app.core.logging import configure_logging, get_logger
+
+logger = get_logger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Opens a persistent SQLite connection for conversation checkpoints
-    at startup, builds the agent graph against it, and stores the
-    compiled graph on app.state so routers can reach it via
-    request.app.state.graph.
- 
-    Using SQLite (rather than the in-memory checkpointer from earlier
-    phases) means conversation history now survives a server restart —
-    closing this gap was the explicit goal of this phase. The
-    connection is closed cleanly on shutdown rather than left dangling.
-    """
+    configure_logging()
+    
+    logger.info("Swabi AI agent starting up")
+    logger.info("Checkpoint DB: %s", settings.CHECKPOINT_DB_PATH)
+    
+    
     conn = await aiosqlite.connect(settings.CHECKPOINT_DB_PATH)
     checkpointer = AsyncSqliteSaver(conn)
     
@@ -34,9 +33,13 @@ async def lifespan(app: FastAPI):
     await checkpointer.setup()
     
     app.state.graph = build_graph(checkpointer)
+    logger.info("Agent graph compiled and ready")
+    
     
     yield
+    logger.info("Swabi AI Agent shutting down")
     await conn.close()
+    
 
 
 app = FastAPI(

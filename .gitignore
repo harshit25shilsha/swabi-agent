@@ -11,6 +11,8 @@ test_phase2_personalization.py
 test_phase3_memory.py
 test_phase3_persistence.py
 test_itinerary.py
+test_item5_logging_history.py
+
 *.db
 *.db-shm
 *.db-wal

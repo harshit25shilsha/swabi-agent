@@ -9,6 +9,10 @@ from groq import APIStatusError
 
 from pydantic import BaseModel, Field
 
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 
 
 router = APIRouter(
@@ -109,6 +113,85 @@ async def debug_session_state(
     }
 
 
+@router.get(
+    "/history/{session_id}",
+    summary="Get conversation history for a session",
+    description=(
+        "Returns the full conversation history for a session_id in a clean, "
+        "frontend-consumable format — alternating user and assistant messages "
+        "grouped by turn number. Use this to display a past conversation, "
+        "resume a session after a page reload, or validate multi-turn "
+        "workflows end-to-end. Returns an empty message list (not a 404) "
+        "if the session exists but has no messages yet."
+    )
+)
+async def get_chat_history(
+    request: Request,
+    session_id: str
+):
+
+    graph = request.app.state.graph
+
+    config = {
+        "configurable": {
+            "thread_id": session_id
+        }
+    }
+
+    state = await graph.aget_state(config)
+
+    if not state or not state.values:
+        return {
+            "session_id": session_id,
+            "found": False,
+            "message_count": 0,
+            "messages": []
+        }
+
+    raw_messages = state.values.get("messages", [])
+
+    ROLE_MAP = {
+        "HumanMessage": "user",
+        "AIMessage": "assistant",
+    }
+
+    clean_messages = []
+    turn = 0
+
+    for msg in raw_messages:
+        role = ROLE_MAP.get(type(msg).__name__)
+        if role is None:
+            continue
+
+        if role == "user":
+            turn += 1
+
+        content = getattr(msg, "content", "") or ""
+
+       
+        if role == "assistant" and not content.strip():
+            continue
+
+        clean_messages.append({
+            "turn": turn,
+            "role": role,
+            "content": content
+        })
+
+    logger.debug(
+        "Chat history retrieved | session=%s | messages=%d",
+        session_id,
+        len(clean_messages)
+    )
+
+    return {
+        "session_id": session_id,
+        "found": True,
+        "message_count": len(clean_messages),
+        "messages": clean_messages
+    }
+
+
 @router.post(
     "/",
     summary="Ask the AI travel agent",
@@ -128,7 +211,6 @@ async def agent_chat(
 
     graph = request.app.state.graph
 
-    
     session_id = body.session_id or str(uuid.uuid4())
 
     config = {
@@ -137,7 +219,6 @@ async def agent_chat(
         }
     }
 
-   
     resolved_user_id = body.user_id
 
     if resolved_user_id is None:
@@ -146,9 +227,15 @@ async def agent_chat(
             if existing_state and existing_state.values:
                 resolved_user_id = existing_state.values.get("user_id")
         except Exception:
-            # No prior checkpoint for this thread_id yet (new session) —
-            # nothing to fall back to, proceed with user_id=None.
             pass
+
+    logger.info(
+        "Agent request | session=%s | user_id=%s | new_session=%s | message=%r",
+        session_id,
+        resolved_user_id,
+        body.session_id is None,
+        (body.message or "")[:80]
+    )
 
     try:
         result = await graph.ainvoke(
@@ -164,7 +251,13 @@ async def agent_chat(
         )
 
     except APIStatusError as e:
-      
+        logger.error(
+            "Groq API error | session=%s | user_id=%s | status=%s | detail=%s",
+            session_id,
+            resolved_user_id,
+            e.status_code,
+            str(e)[:200]
+        )
         return JSONResponse(
             status_code=502,
             content={
@@ -177,6 +270,13 @@ async def agent_chat(
                 "session_id": session_id
             }
         )
+
+    logger.info(
+        "Agent response | session=%s | user_id=%s | response_length=%d",
+        session_id,
+        resolved_user_id,
+        len(result["messages"][-1].content or "")
+    )
 
     return {
         "response": result["messages"][-1].content,

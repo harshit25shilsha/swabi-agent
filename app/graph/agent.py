@@ -1,3 +1,4 @@
+import time
 from app.services.groq_service import llm
 
 from app.graph.tools import tools
@@ -14,6 +15,8 @@ from langgraph.graph import (
 )
 
 from langgraph.checkpoint.memory import MemorySaver
+from app.core.logging import get_logger
+logger = get_logger(__name__)
 
 # Bind Tools To Groq
 
@@ -23,22 +26,43 @@ llm_with_tools = llm.bind_tools(tools)
 # Create Agent Node
 
 async def chatbot(state):
-
+    user_id = state.get("user_id")
+    message_count = len(state.get("message",[]))
+    logger.debug(
+        "Chatbot node invoked | user_id = %s | history_length = %d",
+        user_id,
+        message_count
+    )
+    
     messages = [
         SystemMessage(content=build_system_prompt(state.get("user_id"))),
         *state["messages"]
     ]
-
-    print("\nSTATE:")
-    print(messages)
+    
+    start_time = time.perf_counter()
 
     response = await llm_with_tools.ainvoke(
         messages
     )
-
-    print("\nRESPONSE:")
-    print(response)
-
+    
+    elapsed_ms = (time.perf_counter() - start_time) * 1000
+    
+    if response.tool_calls:
+        tool_names = [tc["name"] for tc in response.tool_calls]
+        
+        logger.info(
+            "LLM response | elapsed=%.0fms | tool_calls=%s",
+            elapsed_ms,
+            tool_names
+        )
+    else:
+        response_preview = (response.content or "")[:120]
+        logger.info(
+            "LLM response | elapsed=%.0fms | final answer | preview=%r",
+            elapsed_ms,
+            response_preview
+        )
+        
     return {
         "messages": [response]
     }
