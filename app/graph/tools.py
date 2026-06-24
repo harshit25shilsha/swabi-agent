@@ -23,6 +23,12 @@ from app.tools.user_tools import (
     get_user_profile
 )
 
+from app.core.token_budget import (
+    summarize_activity,
+    summarize_package,
+    slim_profile
+)
+
 
 @tool
 async def activity_search_tool(
@@ -32,19 +38,9 @@ async def activity_search_tool(
     category: Optional[str] = None,
     max_price: Optional[float] = None
 ):
-    """
-    Search Swabi activities, optionally filtered by country, state, city,
-    category, and/or a maximum price per person.
-
-    Use this when the user wants standalone activities/experiences rather
-    than a full multi-day package, e.g. "show adventure activities in
-    Uttarakhand" or "activities under 2000 rupees in Goa".
-
-    category should be one of Swabi's known activity categories (e.g.
-    "Adventure", "Hiking", "Camping", "Swimming", "Scuba Diving"). If
-    unsure of the exact category name, call activity_category_list_tool
-    first rather than guessing.
-    """
+    """Search activities by location, category, and/or max price per person.
+    Use for standalone activity queries. Check activity_category_list_tool
+    first if unsure of exact category name."""
 
     result = await search_activities(
         country=country,
@@ -54,54 +50,33 @@ async def activity_search_tool(
         max_price=max_price
     )
 
-    return json.dumps(
-        result,
-        default=str
-    )
+    return "\n".join(summarize_activity(a) for a in result)
 
 
 @tool
 async def package_search_tool(
     category: str
 ):
-    """
-    Search Swabi travel packages by category only (e.g. "Adventure",
-    "Religious & Pilgrim Tours"). This does NOT filter by location,
-    budget, or trip duration.
+    """Search packages by category only. Use trip_recommendation_tool
+    instead when location, budget, or duration is also given."""
 
-    Use trip_recommendation_tool instead when the user also gives a
-    destination, budget, or number of days, since this tool can't apply
-    those filters.
-    """
+    result = await search_packages(category=category)
+    packages = (result.get("data") or {}).get("content", [])
 
-    result = await search_packages(
-        category=category
-    )
-
-    return json.dumps(
-        result,
-        default=str
-    )
+    return "\n\n".join(summarize_package(p) for p in packages)
 
 
 @tool
 async def package_detail_tool(
     package_id: int
 ):
-    """
-    Get full details for a single Swabi package by its numeric package
-    ID, including its activities, vendor, price, and duration. Use this
-    after the user picks a specific package from search results.
-    """
+    """Get full details for one package by its numeric ID. Use after
+    the user selects a specific package from search results."""
 
-    result = await get_package_by_id(
-        package_id
-    )
+    result = await get_package_by_id(package_id)
+    package = (result.get("data") or result)
 
-    return json.dumps(
-        result,
-        default=str
-    )
+    return summarize_package(package)
 
 
 @tool
@@ -113,21 +88,9 @@ async def trip_recommendation_tool(
     max_budget: Optional[float] = None,
     duration: Optional[int] = None
 ):
-    """
-    Recommend both activities and packages for a trip, filtered by
-    destination, category, budget, and/or trip length in days.
-
-    destination is a convenience field: pass it when the user names a
-    single place (e.g. "Uttarakhand", "Goa", "India") without specifying
-    whether it's a country or a state — it will be matched against state
-    first, then country. Pass country/state explicitly instead if you
-    already know which one it is.
-
-    Use this (rather than activity_search_tool or package_search_tool
-    individually) whenever the user describes a trip with multiple
-    constraints, e.g. "plan a 5 day adventure trip in Uttarakhand under
-    8000 rupees".
-    """
+    """Recommend activities and packages filtered by destination, category,
+    budget, and/or days. Use this for multi-constraint trip queries.
+    Use itinerary_planner_tool instead when the user wants a day-by-day plan."""
 
     result = await recommend_trip(
         destination=destination,
@@ -138,58 +101,35 @@ async def trip_recommendation_tool(
         duration=duration
     )
 
-    return json.dumps(
-        result,
-        default=str
+    activities = "\n".join(
+        summarize_activity(a) for a in result.get("activities", [])
     )
+    packages = "\n\n".join(
+        summarize_package(p) for p in result.get("packages", [])
+    )
+
+    return f"ACTIVITIES:\n{activities or 'none'}\n\nPACKAGES:\n{packages or 'none'}"
 
 
 @tool
 async def activity_category_list_tool():
-    """
-    Look up the exact list of valid Swabi activity/package category
-    names. Call this BEFORE activity_search_tool, package_search_tool,
-    or trip_recommendation_tool whenever the user's category wording
-    might not match Swabi's exact category name (e.g. user says
-    "pilgrimage" but the real category is "Religious & Pilgrim Tours").
-    Passing a category name that doesn't exactly match returns zero
-    results rather than an error, so checking first avoids silently
-    empty responses.
-    """
+    """Return the exact list of valid Swabi category names. Call this
+    before any category-filtered search when unsure of exact spelling."""
 
     result = await get_activity_categories()
-
-    return json.dumps(
-        result,
-        default=str
-    )
+    return json.dumps(result, default=str)
 
 
 @tool
 async def user_profile_tool(
     user_id: int
 ):
-    """
-    Look up what Swabi knows about a specific user: their explicitly
-    stated travel preferences, categories/states they've actually
-    booked before, recently searched destinations, and recently viewed
-    packages.
+    """Return a user's travel preferences, booking history, and recent
+    searches. Use when the user asks what you know about them, or to
+    explain a personalized recommendation."""
 
-    Use this when the user asks what you know about their preferences
-    or past activity, or when you want to explain why a recommendation
-    was personalized to them. For getting an actual recommendation,
-    prefer personalized_trip_recommendation_tool, which uses this same
-    data automatically.
-    """
-
-    result = await get_user_profile(
-        user_id
-    )
-
-    return json.dumps(
-        result,
-        default=str
-    )
+    result = await get_user_profile(user_id)
+    return json.dumps(slim_profile(result), default=str)
 
 
 @tool
@@ -202,21 +142,9 @@ async def personalized_trip_recommendation_tool(
     max_budget: Optional[float] = None,
     duration: Optional[int] = None
 ):
-    """
-    Like trip_recommendation_tool, but fills in destination/category
-    from the user's own profile (past bookings, search history, stated
-    preferences) for any field the caller didn't explicitly provide.
-
-    Always pass any destination, category, budget, or duration the
-    user explicitly mentioned in their message — those values always
-    take priority over profile defaults. Only leave a field unset if
-    the user didn't specify it and you want this tool to infer a
-    sensible default from their history.
-
-    Use this instead of trip_recommendation_tool whenever a user_id is
-    known and the user's request is open-ended (e.g. "recommend me a
-    trip", "what should I book next").
-    """
+    """Like trip_recommendation_tool but fills in missing destination/category
+    from the user's booking history and preferences. Use when user_id is known
+    and the request is open-ended. Explicit args always override profile defaults."""
 
     result = await personalized_recommend_trip(
         user_id=user_id,
@@ -228,9 +156,18 @@ async def personalized_trip_recommendation_tool(
         duration=duration
     )
 
-    return json.dumps(
-        result,
-        default=str
+    activities = "\n".join(
+        summarize_activity(a) for a in result.get("activities", [])
+    )
+    packages = "\n\n".join(
+        summarize_package(p) for p in result.get("packages", [])
+    )
+    filters = result.get("resolved_filters", {})
+
+    return (
+        f"RESOLVED_FILTERS: {json.dumps(filters)}\n\n"
+        f"ACTIVITIES:\n{activities or 'none'}\n\n"
+        f"PACKAGES:\n{packages or 'none'}"
     )
 
 
@@ -245,32 +182,10 @@ async def itinerary_planner_tool(
     start_date: Optional[str] = None,
     user_id: Optional[int] = None
 ):
-    """
-    Build an actual day-by-day travel itinerary: finds matching
-    activities and packages, then schedules the activities onto
-    specific days, respecting each activity's operating hours, weekly
-    closures (e.g. closed Sundays), and one-off blackout dates so the
-    plan is genuinely usable rather than just a flat list.
-
-    Use this instead of trip_recommendation_tool /
-    personalized_trip_recommendation_tool whenever the user wants an
-    actual PLAN or SCHEDULE — phrases like "plan my trip", "build me
-    an itinerary", "what should I do each day", "day by day" — rather
-    than just a list of options to browse.
-
-    start_date should be "DD-MM-YYYY" if the user gives one (e.g.
-    "starting June 5th"); if they don't mention a start date, leave
-    this unset and it will default to tomorrow.
-
-    duration defaults to 3 days if the user doesn't specify a trip
-    length — the response always reports which duration was actually
-    used so you can tell the user if a default was applied.
-
-    Pass user_id when known so personalization (booking history,
-    search history, preferences) fills in any destination/category the
-    user didn't explicitly state, same as
-    personalized_trip_recommendation_tool.
-    """
+    """Build a day-by-day itinerary scheduling activities onto specific days,
+    respecting closures and time overlaps. Use when user wants a PLAN or
+    SCHEDULE ('plan my trip', 'day by day', 'build an itinerary').
+    start_date format: DD-MM-YYYY. duration defaults to 3 if not given."""
 
     result = await build_trip_itinerary(
         destination=destination,
@@ -283,10 +198,38 @@ async def itinerary_planner_tool(
         user_id=user_id
     )
 
-    return json.dumps(
-        result,
-        default=str
+    lines = []
+
+    if result.get("duration_was_defaulted"):
+        lines.append(
+            f"NOTE: No duration given, defaulted to "
+            f"{result.get('duration_used')} days."
+        )
+
+    for day in result.get("itinerary", []):
+        day_activities = day.get("activities", [])
+        act_lines = "\n  ".join(
+            summarize_activity(a) for a in day_activities
+        ) or "no activities scheduled"
+        lines.append(
+            f"Day {day['day_number']} ({day['weekday']}, {day['date']}) "
+            f"— {day['total_hours']}h total:\n  {act_lines}"
+        )
+
+    unscheduled = result.get("unscheduled_activities", [])
+    if unscheduled:
+        lines.append(
+            f"UNSCHEDULED ({len(unscheduled)} activities couldn't fit):\n  "
+            + "\n  ".join(summarize_activity(a) for a in unscheduled)
+        )
+
+    packages = "\n\n".join(
+        summarize_package(p) for p in result.get("packages", [])
     )
+    if packages:
+        lines.append(f"PACKAGES:\n{packages}")
+
+    return "\n\n".join(lines)
 
 
 tools = [
