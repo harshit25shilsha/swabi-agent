@@ -18,40 +18,70 @@ Presenting results:
 - If unscheduled activities are reported, briefly mention some couldn't fit.
 """
 
-PERSONALIZATION_WITH_USER = """\
+AUTHENTICATED_CONTEXT = """\
 
-Personalization (user_id={user_id}):
-- Open-ended requests ("recommend me a trip", "suggest something", "I'm not picky") →
-  use personalized_trip_recommendation_tool with this user_id so it can fill
-  defaults from booking/search history. Do NOT fall back to generic tools for
-  open-ended requests when user_id is available.
-- If the user states destination/category/budget/duration explicitly, pass those
-  args directly — they always override profile defaults.
-- user_profile_tool → use if the user asks what you know about them or to explain
-  a personalized recommendation.
-"""
-
-PERSONALIZATION_WITHOUT_USER = """\
+User identity (authenticated):
+- user_id: {user_id}
+- name: {first_name} {last_name}
+- You may address the user by first name when it feels natural.
 
 Personalization:
-- No user_id is available for this session. You cannot personalize results.
-- If the user makes an open-ended request ("recommend me a trip", "suggest
-  something", "I'm not picky about where") WITHOUT specifying a destination,
-  category, or budget: do NOT call any tool. Instead, ask them to share at
-  least one preference (destination, activity type, or budget) so you can
-  give a meaningful recommendation. Optionally mention that logging in would
-  enable personalized suggestions based on their history.
-- If the user gives at least one concrete constraint (destination, category,
-  budget, or duration), use trip_recommendation_tool or activity_search_tool
-  with those explicit args.
+- Open-ended requests ("recommend me a trip", "I'm not picky") →
+  personalized_trip_recommendation_tool with user_id={user_id}.
+- Explicit destination/category/budget always overrides profile defaults.
+- user_profile_tool → use if user asks what you know about them.
+
+Booking (available in Phase 5+):
+- This user is authenticated and can book. When they say "book this" or
+  "I want to book", confirm the details and proceed with booking tools
+  once they are available.
+"""
+
+GUEST_WITH_USER_ID = """\
+
+Personalization (user_id={user_id}):
+- Open-ended requests → personalized_trip_recommendation_tool with user_id={user_id}.
+- Explicit args always override profile defaults.
+- user_profile_tool → use if user asks what you know about them.
+
+Booking:
+- This session is not authenticated. If the user asks to book, let them
+  know they need to log in first via POST /auth/login, then start a new
+  session with their token.
+"""
+
+GUEST_NO_USER_ID = """\
+
+Personalization:
+- No user identity available. Cannot personalize results.
+- If the user makes an open-ended request without any constraints
+  (destination, category, budget, duration): do NOT call any tool.
+  Ask them to share at least one preference, or suggest they log in
+  for personalized recommendations.
+- If at least one constraint is given, use trip_recommendation_tool
+  or activity_search_tool with those explicit args.
+
+Booking:
+- Guest users cannot book. If asked, invite them to log in via
+  POST /auth/login and start a new session with their token.
 """
 
 
-def build_system_prompt(user_id: int = None) -> str:
-    """Return the system prompt, including user_id context when available."""
-    if user_id is not None:
-        return BASE_SYSTEM_PROMPT + PERSONALIZATION_WITH_USER.format(user_id=user_id)
-    return BASE_SYSTEM_PROMPT + PERSONALIZATION_WITHOUT_USER
+def build_system_prompt(
+    user_id:        int  = None,
+    is_authenticated: bool = False,
+    first_name:     str  = "",
+    last_name:      str  = "",
+) -> str:
+    if is_authenticated and user_id:
+        return BASE_SYSTEM_PROMPT + AUTHENTICATED_CONTEXT.format(
+            user_id=user_id,
+            first_name=first_name or "there",
+            last_name=last_name or "",
+        )
+    if user_id:
+        return BASE_SYSTEM_PROMPT + GUEST_WITH_USER_ID.format(user_id=user_id)
+    return BASE_SYSTEM_PROMPT + GUEST_NO_USER_ID
 
 
 # Backward-compat alias

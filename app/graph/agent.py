@@ -10,10 +10,8 @@ from app.graph.state import AgentState
 from langchain_core.messages import SystemMessage, ToolMessage
 from app.graph.prompts import build_system_prompt
 
-from langgraph.graph import (
-    StateGraph,
-    START
-)
+
+from langgraph.graph import StateGraph, START
 
 from langgraph.checkpoint.memory import MemorySaver
 from app.core.logging import get_logger
@@ -27,19 +25,10 @@ llm_with_tools = llm.bind_tools(tools)
 
 def _trim_prior_tool_messages(messages: list) -> list:
     """
-    Replace the content of ToolMessages from PRIOR turns with a short
-    placeholder before sending to Groq.
-
-    Why: LangGraph stores every ToolMessage (the full Swabi API
-    response) in the checkpoint. On each new turn, the full history is
-    re-sent to Groq, so a tool result from turn 1 gets re-sent on
-    turns 2, 3, 4... compounding token usage with every turn.
-
-    Fix: keep the most recent turn's ToolMessages intact (so the LLM
-    can see what it just fetched while composing its reply), but replace
-    all earlier ToolMessages with a short placeholder. The LLM has
-    already incorporated those results into its prior reply — re-sending
-    them verbatim serves no purpose and burns tokens linearly per turn.
+    Replace ToolMessages from prior turns with a short placeholder.
+    Keeps the most recent turn's tool results intact for the LLM to
+    use while composing its reply; trims everything older to avoid
+    linear token growth across turns.
     """
 
     last_human_idx = None
@@ -68,43 +57,52 @@ def _trim_prior_tool_messages(messages: list) -> list:
 
 # Create Agent Node
 
-async def chatbot(state):
+async def chatbot(state: AgentState):
 
     user_id = state.get("user_id")
+    auth_user = state.get("auth_user")
+    is_authenticated = state.get("is_authenticated", False)
     message_count = len(state.get("messages", []))
 
     logger.debug(
-        "Chatbot node invoked | user_id=%s | history_length=%d",
+        "Chatbot node | user_id=%s | authenticated=%s | history=%d",
         user_id,
-        message_count
+        is_authenticated,
+        message_count,
+    )
+    
+    # build system prompt with full auth context
+    
+    system_prompt = build_system_prompt(
+        user_id=user_id,
+        is_authenticated = is_authenticated,
+        first_name = auth_user.first_name if auth_user else "",
+        last_name = auth_user.last_name if auth_user else "",
+        
     )
 
     messages = [
-        SystemMessage(content=build_system_prompt(user_id)),
+        SystemMessage(content= system_prompt),
         *_trim_prior_tool_messages(state["messages"])
     ]
 
-    start_time = time.perf_counter()
+    start = time.perf_counter()
 
-    response = await llm_with_tools.ainvoke(
-        messages
-    )
+    response = await llm_with_tools.ainvoke(messages)
 
-    elapsed_ms = (time.perf_counter() - start_time) * 1000
+    elapsed_ms = (time.perf_counter() - start) * 1000
 
     if response.tool_calls:
-        tool_names = [tc["name"] for tc in response.tool_calls]
         logger.info(
-            "LLM response | elapsed=%.0fms | tool_calls=%s",
+            "LLM response | %.0fms | tools=%s",
             elapsed_ms,
-            tool_names
+            [tc["name"] for tc in  response.tool_calls],
         )
     else:
-        response_preview = (response.content or "")[:120]
         logger.info(
-            "LLM response | elapsed=%.0fms | final_answer | preview=%r",
+            "LLM response | %.0fms | final | preview=%r",
             elapsed_ms,
-            response_preview
+            (response.content or "")[:120],
         )
 
     return {
@@ -120,50 +118,18 @@ tool_node = ToolNode(
 
 
 def build_graph(checkpointer):
-    """
-    Build and compile the agent graph with the given checkpointer.
 
-    Kept as a factory function (rather than only a module-level
-    compiled graph) so the app can choose its checkpointer at startup —
-    an in-memory MemorySaver for quick local testing, or a persistent
-    AsyncSqliteSaver (see app/main.py) for conversation history that
-    survives a server restart. Different checkpointers are NOT
-    interchangeable after compile time, so the choice has to be made
-    before compiling, not patched in afterward.
-    """
-
-    builder = StateGraph(
-        AgentState
-    )
-
-    builder.add_node(
-        "chatbot",
-        chatbot
-    )
-
-    builder.add_node(
-        "tools",
-        tool_node
-    )
-
-    builder.add_edge(
-        START,
-        "chatbot"
-    )
+    builder = StateGraph(AgentState)
+    builder.add_node("chatbot",chatbot)
+    builder.add_node("tools",tool_node)
+    builder.add_edge(START,"chatbot")
 
     # Conditional edge
-
-    builder.add_conditional_edges(
-        "chatbot",
-        tools_condition
-    )
+    builder.add_conditional_edges("chatbot",tools_condition)
 
     # Tool returns to chatbot
 
-    builder.add_edge(
-        "tools",
-        "chatbot"
-    )
+    builder.add_edge("tools","chatbot")
 
     return builder.compile(
         checkpointer=checkpointer

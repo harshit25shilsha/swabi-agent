@@ -1,16 +1,17 @@
 from contextlib import asynccontextmanager
-import aiosqlite
+
 from fastapi import FastAPI
 
-from app.routers.chat import router
+from app.routers.chat    import router  as chat_router
 from app.routers.activity import router as activity_router
-from app.routers.package import router as package_router
-from app.routers.agent import router as agent_router
-from app.graph.agent import build_graph
-from app.config import settings
+from app.routers.package  import router as package_router
+from app.routers.agent    import router as agent_router
+from app.routers.auth     import router as auth_router
+from fastapi.middleware.cors import CORSMiddleware
 
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
+from app.graph.agent  import build_graph
+from app.config       import settings
 from app.core.logging import configure_logging, get_logger
 
 logger = get_logger(__name__)
@@ -19,48 +20,45 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
-    
-    logger.info("Swabi AI agent starting up")
-    logger.info("Checkpoint DB: %s", settings.CHECKPOINT_DB_PATH)
-    
-    
-    conn = await aiosqlite.connect(settings.CHECKPOINT_DB_PATH)
-    checkpointer = AsyncSqliteSaver(conn)
-    
-    
-    # Creates the checkpoint tables on first run if they don't already
-    # exist; harmless no-op on subsequent startups against the same DB File.
-    await checkpointer.setup()
-    
+    try:
+        import importlib
+
+        module = importlib.import_module("langgraph.checkpoint.aiosqlite")
+        AsyncSqliteSaver = module.AsyncSqliteSaver
+        checkpointer = AsyncSqliteSaver.from_conn_string(settings.CHECKPOINT_DB_PATH)
+        logger.info("Using SQLite checkpointer: %s", settings.CHECKPOINT_DB_PATH)
+    except Exception:
+        from langgraph.checkpoint.memory import MemorySaver
+        checkpointer = MemorySaver()
+        logger.warning("SQLite checkpointer unavailable — using in-memory (sessions won't survive restart)")
+
     app.state.graph = build_graph(checkpointer)
     logger.info("Agent graph compiled and ready")
-    
-    
     yield
-    logger.info("Swabi AI Agent shutting down")
-    await conn.close()
-    
 
 
 app = FastAPI(
-    title="Swabi Agent",
-    lifespan= lifespan
+    title="Swabi AI Agent",
+    version="0.4.0",
+    description="AI-powered travel assistant for Swabi — search, recommend, and book trips.",
+    lifespan=lifespan,
 )
 
-app.include_router(router)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(auth_router)
+app.include_router(chat_router)
 app.include_router(activity_router)
 app.include_router(package_router)
 app.include_router(agent_router)
 
 
-@app.get(
-    "/",
-    summary="Check service status",
-    description="Use this endpoint to confirm the Swabi Agent API is running."
-)
-def root():
-
-    return {
-        "service": "swabi-agent",
-        "status": "running"
-    }
+@app.get("/", tags=["Health"])
+async def health():
+    return {"service": "swabi-agent", "status": "running", "version": "0.4.0"}
