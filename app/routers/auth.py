@@ -1,7 +1,7 @@
 import httpx
 
-from fastapi import APIRouter, HTTPException, Header, status
-from typing import Optional
+from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.schemas.auth import (
     LoginRequest,
@@ -22,6 +22,11 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
+
+# HTTPBearer gives Swagger UI a proper "Authorize" lock icon that handles
+# the "Bearer " prefix automatically — more reliable than a plain Header()
+# param, which Swagger's "Try it out" sometimes fails to attach correctly.
+bearer_scheme = HTTPBearer()
 
 
 # ── Login 
@@ -82,20 +87,16 @@ async def login_endpoint(body: LoginRequest):
     summary="Log out and invalidate the Swabi session",
     description=(
         "Invalidates the user session on the Swabi backend. "
-        "Send the JWT in the Authorization: Bearer header. "
+        "Click the 'Authorize' lock icon (top right of Swagger UI) and "
+        "paste your raw token (no 'Bearer ' prefix needed there) — or "
+        "send Authorization: Bearer <token> directly via curl/Postman. "
         "Discard the token on the frontend after calling this."
     ),
 )
 async def logout_endpoint(
-    authorization: Optional[str] = Header(None),
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header missing or malformed. Expected: Bearer <token>",
-        )
-
-    token     = authorization.removeprefix("Bearer ").strip()
+    token     = credentials.credentials
     auth_user = decode_swabi_token(token)
 
     try:
@@ -113,7 +114,7 @@ async def logout_endpoint(
         return LogoutResponse(message="Logged out (session may already have expired).")
 
 
-# ── Forgot password — OTP send 
+# ── Forgot password — OTP send ─────────────────────────────────────────────
 
 @router.get(
     "/otp/send",
