@@ -1,14 +1,3 @@
-"""
-Auth router — Phase 4.
-
-Endpoints:
-  POST /auth/login           — login with email + password → JWT
-  POST /auth/logout          — invalidate session (Bearer token required)
-  GET  /auth/otp/send        — send OTP to email (forgot password flow)
-  POST /auth/otp/verify      — verify OTP code
-  PUT  /auth/password/reset  — update password after OTP verified
-"""
-
 import httpx
 
 from fastapi import APIRouter, HTTPException, Header, status
@@ -35,7 +24,7 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
 
-# ── Login ──────────────────────────────────────────────────────────────────
+# ── Login 
 
 @router.post(
     "/login",
@@ -74,7 +63,7 @@ async def login_endpoint(body: LoginRequest):
             e.response.status_code,
             e.response.text[:200],
         )
-        if e.response.status_code in (401, 403):
+        if e.response.status_code in (400, 401, 403, 404, 422):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password.",
@@ -85,7 +74,7 @@ async def login_endpoint(body: LoginRequest):
         )
 
 
-# ── Logout ─────────────────────────────────────────────────────────────────
+# ── Logout 
 
 @router.post(
     "/logout",
@@ -124,7 +113,7 @@ async def logout_endpoint(
         return LogoutResponse(message="Logged out (session may already have expired).")
 
 
-# ── Forgot password — OTP send ─────────────────────────────────────────────
+# ── Forgot password — OTP send 
 
 @router.get(
     "/otp/send",
@@ -146,7 +135,7 @@ async def otp_send(email: str):
         )
 
 
-# ── Forgot password — OTP verify ───────────────────────────────────────────
+# ── Forgot password — OTP verify 
 
 @router.post(
     "/otp/verify",
@@ -175,7 +164,7 @@ async def otp_verify(body: VerifyOtpRequest):
         )
 
 
-# ── Forgot password — password reset ──────────────────────────────────────
+# ── Forgot password — password reset 
 
 @router.put(
     "/password/reset",
