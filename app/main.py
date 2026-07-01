@@ -1,14 +1,13 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers.chat    import router  as chat_router
+from app.routers.chat     import router as chat_router
 from app.routers.activity import router as activity_router
 from app.routers.package  import router as package_router
 from app.routers.agent    import router as agent_router
 from app.routers.auth     import router as auth_router
-from fastapi.middleware.cors import CORSMiddleware
-
 
 from app.graph.agent  import build_graph
 from app.config       import settings
@@ -20,21 +19,27 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
-    try:
-        import importlib
 
-        module = importlib.import_module("langgraph.checkpoint.aiosqlite")
-        AsyncSqliteSaver = module.AsyncSqliteSaver
-        checkpointer = AsyncSqliteSaver.from_conn_string(settings.CHECKPOINT_DB_PATH)
-        logger.info("Using SQLite checkpointer: %s", settings.CHECKPOINT_DB_PATH)
-    except Exception:
+    try:
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+        # v3.x: from_conn_string returns an async context manager
+        async with AsyncSqliteSaver.from_conn_string(settings.CHECKPOINT_DB_PATH) as checkpointer:
+            logger.info("Using SQLite checkpointer: %s", settings.CHECKPOINT_DB_PATH)
+            app.state.graph = build_graph(checkpointer)
+            logger.info("Agent graph compiled and ready")
+            yield  # server runs here
+
+    except Exception as e:
+        logger.warning(
+            "SQLite checkpointer unavailable — using in-memory "
+            "(sessions won't survive restart). Reason: %s", e
+        )
         from langgraph.checkpoint.memory import MemorySaver
         checkpointer = MemorySaver()
-        logger.warning("SQLite checkpointer unavailable — using in-memory (sessions won't survive restart)")
-
-    app.state.graph = build_graph(checkpointer)
-    logger.info("Agent graph compiled and ready")
-    yield
+        app.state.graph = build_graph(checkpointer)
+        logger.info("Agent graph compiled and ready (in-memory)")
+        yield
 
 
 app = FastAPI(

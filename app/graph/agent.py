@@ -135,4 +135,3 @@ def build_graph(checkpointer):
         checkpointer=checkpointer
     )
 
-graph = build_graph(MemorySaver())
