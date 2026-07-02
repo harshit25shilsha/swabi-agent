@@ -157,8 +157,18 @@
     }
     .si-icon { font-size: 13px; flex-shrink: 0; opacity: .6; }
     .session-item.active .si-icon { opacity: 1; }
-    .si-title { overflow: hidden; text-overflow: ellipsis; opacity: 1; transition: opacity .2s; }
+    .si-title { overflow: hidden; text-overflow: ellipsis; opacity: 1; transition: opacity .2s; flex: 1 1 auto; min-width: 0; }
     .sidebar.collapsed .si-title { opacity: 0; width: 0; }
+    .si-del {
+      opacity: 0; flex-shrink: 0; width: 20px; height: 20px; margin-left: 2px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 6px; border: none; background: transparent;
+      color: var(--muted); font-size: 12px; cursor: pointer; line-height: 1;
+      transition: opacity .12s, background .12s, color .12s;
+    }
+    .session-item:hover .si-del { opacity: 1; }
+    .si-del:hover { background: rgba(239,68,68,.15); color: var(--danger); }
+    .sidebar.collapsed .si-del { display: none; }
 
     /* Sidebar footer */
     .sidebar-footer {
@@ -398,8 +408,18 @@
       font-size: 10px; color: var(--muted);
       margin-bottom: 2px;
       padding: 0 2px;
+      display: flex; align-items: center; gap: 6px;
     }
     .message-row.user .msg-meta { text-align: right; }
+    .msg-group.user-group .msg-meta { justify-content: flex-end; }
+    .msg-del-btn {
+      opacity: 0; border: none; background: transparent; cursor: pointer;
+      color: var(--muted); font-size: 11px; padding: 1px 4px; border-radius: 4px;
+      line-height: 1.4;
+      transition: opacity .12s, background .12s, color .12s;
+    }
+    .msg-group:hover .msg-del-btn { opacity: 1; }
+    .msg-del-btn:hover { background: rgba(239,68,68,.15); color: var(--danger); }
 
     /* Typing indicator */
     .typing-row { align-items: center; }
@@ -823,15 +843,22 @@ function switchSession(i){
   activeIdx = i;
   const s = sessions[i];
   document.getElementById('welcome').style.display = 'none';
-  const t = document.getElementById('thread');
-  t.classList.add('visible');
-  t.innerHTML = '';
-  s.msgs.forEach(m => addBubble(m.role, m.text, false));
   document.getElementById('chips-bar').classList.add('visible');
   document.getElementById('chat-title').textContent = s.title;
+  renderThread(s);
   renderSessions();
   scrollBottom();
   save();
+}
+
+/* Rebuilds the visible thread from a session's msgs array. Centralized
+   so switching sessions, backend sync, and message deletion all render
+   the same way. */
+function renderThread(s){
+  const t = document.getElementById('thread');
+  t.classList.add('visible');
+  t.innerHTML = '';
+  s.msgs.forEach((m,idx) => addBubble(m.role, m.text, false, idx, m.id));
 }
 
 function renderSessions(){
@@ -844,7 +871,58 @@ function renderSessions(){
     <div class="session-item ${i===activeIdx?'active':''}" onclick="switchSession(${i})">
       <span class="si-icon">💬</span>
       <span class="si-title">${esc(s.title)}</span>
+      <button type="button" class="si-del" title="Delete conversation" onclick="event.stopPropagation(); deleteSession(${i})">🗑</button>
     </div>`).join('');
+}
+
+/* Deletes an entire conversation: best-effort purge of the backend's
+   LangGraph checkpoint (so it can't come back via history sync), then
+   removes it from the local sidebar/storage regardless of whether the
+   backend call succeeded (e.g. offline, or nothing was ever persisted). */
+async function deleteSession(i){
+  const s = sessions[i];
+  if(!s) return;
+  if(!confirm(`Delete "${s.title}"? This can't be undone.`)) return;
+
+  if(s.sid){
+    try {
+      await fetch(`${API}/agent/session/${s.sid}`, {method:'DELETE'});
+    } catch(_){
+      // Backend unreachable — still remove locally; nothing more we can do here.
+    }
+  }
+
+  sessions.splice(i, 1);
+  if(activeIdx === i){
+    newChat();
+  } else {
+    if(activeIdx > i) activeIdx--;
+    save();
+    renderSessions();
+  }
+  showToast('Conversation deleted.', 'success');
+}
+
+/* Deletes a single message bubble from the currently open conversation.
+   Removes it from the backend checkpoint (via RemoveMessage) when we
+   know its LangGraph message id, so it won't reappear on next sync. */
+async function deleteMessage(idx){
+  const s = sessions[activeIdx];
+  if(!s || !s.msgs[idx]) return;
+  if(!confirm('Delete this message?')) return;
+
+  const msg = s.msgs[idx];
+  if(s.sid && msg.id){
+    try {
+      await fetch(`${API}/agent/message/${s.sid}/${msg.id}`, {method:'DELETE'});
+    } catch(_){
+      // Backend unreachable — still remove locally.
+    }
+  }
+
+  s.msgs.splice(idx, 1);
+  save();
+  renderThread(s);
 }
 
 function save(){
@@ -868,21 +946,18 @@ async function syncHistoryFromBackend(s){
     if(!data.found || !data.messages?.length) return;
 
     const remoteMsgs = data.messages.map(m => ({
+      id:   m.id,
       role: m.role === 'user' ? 'user' : 'ai',
       text: m.content,
     }));
 
-    // Only re-render if the backend actually has more/different content
-    // than what's cached locally, to avoid disrupting an active view.
-    if(remoteMsgs.length !== s.msgs.length){
-      s.msgs = remoteMsgs;
-      save();
-      if(sessions[activeIdx] === s){
-        const t = document.getElementById('thread');
-        t.innerHTML = '';
-        s.msgs.forEach(m => addBubble(m.role, m.text, false));
-        scrollBottom();
-      }
+    const lengthChanged = remoteMsgs.length !== s.msgs.length;
+    s.msgs = remoteMsgs; // backend is the source of truth for content + ids
+    save();
+
+    if(sessions[activeIdx] === s){
+      renderThread(s);
+      if(lengthChanged) scrollBottom();
     }
   } catch(_){
     // Backend unreachable — keep showing local cache.
@@ -905,7 +980,7 @@ async function sendMessage(){
 
   const s = sessions[activeIdx];
   s.msgs.push({role:'user', text});
-  addBubble('user', text);
+  addBubble('user', text, true, s.msgs.length - 1);
   save();
 
   inp.value = '';
@@ -935,8 +1010,13 @@ async function sendMessage(){
     setBusy(false);
     const reply = data.response || 'No response received.';
     s.msgs.push({role:'ai', text: reply});
-    addBubble('ai', reply);
+    addBubble('ai', reply, true, s.msgs.length - 1);
     save();
+
+    // Backfill real LangGraph message ids for the two messages just sent,
+    // so they can be individually deleted from the backend checkpoint
+    // later. Fire-and-forget: doesn't block the UI.
+    syncHistoryFromBackend(s);
   } catch(err){
     setBusy(false);
 
@@ -952,7 +1032,7 @@ async function sendMessage(){
       ? `Something went wrong: ${err.message}`
       : `Unable to reach Swabi API. Make sure the backend is running at ${API}.\n\n${err.message}`;
     s.msgs.push({role:'ai', text: msg});
-    addBubble('ai', msg);
+    addBubble('ai', msg, true, s.msgs.length - 1);
     save();
   }
 }
@@ -971,13 +1051,14 @@ function onKey(e){
 }
 
 /* ─── UI helpers ─────────────────────────────────────── */
-function addBubble(role, text, scroll=true){
+function addBubble(role, text, scroll=true, idx=null, msgId=null){
   const thread = document.getElementById('thread');
   const isUser = role==='user';
   const now = new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
 
   const group = document.createElement('div');
-  group.className = 'msg-group';
+  group.className = `msg-group${isUser?' user-group':''}`;
+  if(msgId) group.dataset.msgId = msgId;
 
   const row = document.createElement('div');
   row.className = `message-row ${isUser?'user':''}`;
@@ -995,7 +1076,18 @@ function addBubble(role, text, scroll=true){
 
   const meta = document.createElement('div');
   meta.className = 'msg-meta';
-  meta.textContent = isUser ? `You · ${now}` : `Swabi AI · ${now}`;
+  const metaLabel = document.createElement('span');
+  metaLabel.textContent = isUser ? `You · ${now}` : `Swabi AI · ${now}`;
+  meta.appendChild(metaLabel);
+  if(idx !== null){
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'msg-del-btn';
+    delBtn.title = 'Delete message';
+    delBtn.textContent = '🗑';
+    delBtn.onclick = () => deleteMessage(idx);
+    meta.appendChild(delBtn);
+  }
 
   group.appendChild(meta);
   group.appendChild(row);

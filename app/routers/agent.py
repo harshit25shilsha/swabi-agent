@@ -1,9 +1,9 @@
 import uuid
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, RemoveMessage
 
 from groq import APIStatusError
 
@@ -204,7 +204,7 @@ async def get_chat_history(request: Request, session_id: str):
         content = getattr(msg, "content", "") or ""
         if role == "assistant" and not content.strip():
             continue
-        clean.append({"turn": turn, "role": role, "content": content})
+        clean.append({"id": msg.id, "turn": turn, "role": role, "content": content})
 
     return {
         "session_id":    session_id,
@@ -212,3 +212,60 @@ async def get_chat_history(request: Request, session_id: str):
         "message_count": len(clean),
         "messages":      clean,
     }
+
+
+#  Delete endpoints 
+
+@router.delete(
+    "/session/{session_id}",
+    summary="Delete an entire conversation",
+    description=(
+        "Permanently removes all checkpointed state for this session_id "
+        "from the LangGraph store, including every message and any "
+        "pending writes. Cannot be undone."
+    ),
+)
+async def delete_session(request: Request, session_id: str):
+    graph  = request.app.state.graph
+    config = {"configurable": {"thread_id": session_id}}
+
+    state = await graph.aget_state(config)
+    if not state or not state.values:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    checkpointer = graph.checkpointer
+    if not hasattr(checkpointer, "adelete_thread"):
+        raise HTTPException(
+            status_code=501,
+            detail="Current checkpointer backend does not support deleting threads",
+        )
+
+    await checkpointer.adelete_thread(session_id)
+    logger.info("Deleted session | session=%s", session_id)
+    return {"session_id": session_id, "deleted": True}
+
+
+@router.delete(
+    "/message/{session_id}/{message_id}",
+    summary="Delete a single message from a conversation",
+    description=(
+        "Removes one message (by its LangGraph message id, as returned by "
+        "GET /agent/history) from the session's checkpointed state, without "
+        "affecting the rest of the conversation."
+    ),
+)
+async def delete_message(request: Request, session_id: str, message_id: str):
+    graph  = request.app.state.graph
+    config = {"configurable": {"thread_id": session_id}}
+
+    state = await graph.aget_state(config)
+    if not state or not state.values:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    existing_ids = {m.id for m in state.values.get("messages", [])}
+    if message_id not in existing_ids:
+        raise HTTPException(status_code=404, detail="Message not found in this session")
+
+    await graph.aupdate_state(config, {"messages": [RemoveMessage(id=message_id)]})
+    logger.info("Deleted message | session=%s | message_id=%s", session_id, message_id)
+    return {"session_id": session_id, "message_id": message_id, "deleted": True}
