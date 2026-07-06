@@ -8,6 +8,21 @@ async def get_all_activities():
     )
 
 
+async def get_activity_by_id(activity_id: int):
+    """
+    Fetch a single activity by ID. Swabi has no per-ID activity endpoint,
+    so this filters client-side from the full activity list — same
+    approach as get_travel_preferences/get_search_logs in user_tools.py.
+    Returns None if not found.
+    """
+    data = await get_all_activities()
+    activities = (data.get("data") or {}).get("content", [])
+    for activity in activities:
+        if activity.get("activityId") == activity_id:
+            return activity
+    return None
+
+
 async def get_activity_categories():
     """Fetch canonical Swabi category names (e.g. 'Adventure', 'Hiking').
     Consult before guessing a category for filtered searches — an incorrect

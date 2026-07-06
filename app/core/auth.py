@@ -50,12 +50,23 @@ def _jwt_secret() -> bytes:
 
 
 def decode_swabi_token(token: str) -> AuthUser:
-    """Decode and validate a Swabi JWT using the backend signing secret."""
+    """
+    Decode and validate a Swabi JWT using the backend signing secret.
+
+    leeway tolerates small clock skew between this server and whatever
+    issued the token (Swabi's backend). Without it, PyJWT >=2.6 rejects
+    a token outright if this machine's clock is even a few seconds
+    behind the issuer's — surfacing as "The token is not yet valid
+    (iat)" on an otherwise-valid, freshly-issued token. This doesn't
+    fix a badly wrong system clock (see settings.SWABI_JWT_LEEWAY_SECONDS
+    if more tolerance is needed), just normal clock drift.
+    """
     try:
         payload = jwt.decode(
             token,
             _jwt_secret(),
             algorithms=[settings.SWABI_JWT_ALGORITHM],
+            leeway=settings.SWABI_JWT_LEEWAY_SECONDS,
         )
     except jwt.ExpiredSignatureError:
         raise HTTPException(
