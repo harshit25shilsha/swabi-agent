@@ -136,37 +136,50 @@ def summarize_package(package: dict, *, detail: bool = False) -> str:
 
 
 def summarize_booking(booking: dict) -> str:
-    
-    def _first(d: dict, *keys):
-        for k in keys:
-            if d.get(k) is not None:
-                return d.get(k)
-        return None
+    """
+    Single pipe-delimited line per booking for LLM consumption, used by
+    booking_history_tool (Phase 6).
 
-    pkg = booking.get("pkg") or booking.get("package") or {}
-    activity = booking.get("activity") or {}
+    Field names confirmed from a real response of
+    /package_booking/get_package_booking_by_userId (userId=2, July 2026):
+    packageBookingId, bookingDate, bookingStatus, numberOfMembers,
+    totalPayableAmount, currency, cancellationReason, cancelledBy,
+    endDate, offerCode, pkg.packageName. There is no separate booking
+    "reference" field — packageBookingId is the only identifier Swabi
+    returns, so that's what's shown as the id.
+    """
+    pkg = booking.get("pkg") or {}
 
-    name = (
-        pkg.get("packageName")
-        or activity.get("activityName")
-        or booking.get("packageName")
-        or booking.get("activityName")
-        or "?"
-    )
+    booking_id = booking.get("packageBookingId")
+    name = pkg.get("packageName") or "?"
+    status = booking.get("bookingStatus") or "?"
+    start_date = booking.get("bookingDate")
+    end_date = booking.get("endDate")
+    people = booking.get("numberOfMembers")
+    amount = booking.get("totalPayableAmount")
+    currency = booking.get("currency") or pkg.get("currency") or "INR"
+    offer_code = booking.get("offerCode") or None
 
-    ref = _first(booking, "bookingReference", "bookingRefNo", "referenceNumber", "bookingId")
-    status = _first(booking, "bookingStatus", "status") or "?"
-    date = _first(booking, "bookingDate", "date", "travelDate")
-    people = _first(booking, "numberOfPeople", "numPeople", "noOfPeople")
-    amount = _first(booking, "totalAmount", "totalPrice", "amount")
-    currency = booking.get("currency") or pkg.get("currency") or activity.get("currency") or "INR"
-
+    date_range = f"{start_date} to {end_date}" if start_date and end_date else (start_date or "?")
     amount_str = f"{amount} {currency}" if amount is not None else "?"
 
-    return (
-        f"ref={ref} | {name} | status={status} | date={date} | "
+    line = (
+        f"id={booking_id} | {name} | status={status} | {date_range} | "
         f"people={people} | total={amount_str}"
     )
+
+    if offer_code:
+        line += f" | offer={offer_code}"
+
+    # Cancelled bookings: surface who cancelled and why, straight from
+    # Swabi's own data — never invent a reason the LLM wasn't given.
+    if status == "CANCELLED":
+        reason = booking.get("cancellationReason")
+        cancelled_by = booking.get("cancelledBy")
+        if reason or cancelled_by:
+            line += f" | cancelled_by={cancelled_by or '?'} | reason={reason or '?'}"
+
+    return line
 
 
 def slim_profile(profile: dict) -> dict:
