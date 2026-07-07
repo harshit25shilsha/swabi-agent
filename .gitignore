@@ -17,3 +17,4 @@ test_item5_logging_history.py
 *.db-shm
 *.db-wal
 manual_auth_smoketest.py
+tests/

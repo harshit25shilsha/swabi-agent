@@ -564,7 +564,7 @@ from app.tools.recommendation_tools import (
     personalized_recommend_trip,
     build_trip_itinerary,
 )
-from app.tools.user_tools import get_user_profile
+from app.tools.user_tools import get_user_profile, get_user_bookings
 from app.tools.booking_tools import (
     check_package_availability,
     check_activity_availability,
@@ -580,6 +580,7 @@ from app.tools.member_tools import (
 from app.core.token_budget import (
     summarize_activity,
     summarize_package,
+    summarize_booking,
     slim_profile,
     TOP_N_ACTIVITIES,
     TOP_N_PACKAGES,
@@ -1101,6 +1102,42 @@ async def add_members_tool(
     }, default=str)
 
 
+#  Booking History (Phase 6 — read-only, closes the loop after hand-off) 
+
+@tool
+async def booking_history_tool(
+    state: Annotated[AgentState, InjectedState],
+    booking_status: str = "ALL",
+):
+    """View the logged-in user's past/current package bookings — name,
+    status, date, headcount, total — so they can ask "what did I book?"
+    or "is my booking confirmed?" without leaving chat.
+
+    booking_status: one of ALL, PENDING, CONFIRMED, CANCELLED (whatever
+    Swabi's own status values are) — defaults to ALL.
+
+    Read-only. This is the ONLY thing the agent can tell the user about
+    a completed booking — it cannot cancel, reschedule, retry payment,
+    or change anything here. Always use the account holder's own
+    identity from the verified session; there is no user_id parameter
+    because this must never be called for anyone but the logged-in
+    user themselves.
+    """
+
+    auth_user, error = _require_auth(state)
+    if error:
+        return error
+
+    result = await get_user_bookings(auth_user.user_id, booking_status)
+    bookings = (result.get("data") or {}).get("content", [])
+
+    if not bookings:
+        return f"No bookings found (status filter: {booking_status})."
+
+    lines = [summarize_booking(b) for b in bookings]
+    return "\n".join(lines)
+
+
 #  Tool registry 
 
 tools = [
@@ -1118,4 +1155,5 @@ tools = [
     country_list_tool,
     country_states_tool,
     add_members_tool,
+    booking_history_tool,
 ]

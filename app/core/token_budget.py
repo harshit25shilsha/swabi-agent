@@ -135,6 +135,40 @@ def summarize_package(package: dict, *, detail: bool = False) -> str:
     return "\n".join(lines)
 
 
+def summarize_booking(booking: dict) -> str:
+    
+    def _first(d: dict, *keys):
+        for k in keys:
+            if d.get(k) is not None:
+                return d.get(k)
+        return None
+
+    pkg = booking.get("pkg") or booking.get("package") or {}
+    activity = booking.get("activity") or {}
+
+    name = (
+        pkg.get("packageName")
+        or activity.get("activityName")
+        or booking.get("packageName")
+        or booking.get("activityName")
+        or "?"
+    )
+
+    ref = _first(booking, "bookingReference", "bookingRefNo", "referenceNumber", "bookingId")
+    status = _first(booking, "bookingStatus", "status") or "?"
+    date = _first(booking, "bookingDate", "date", "travelDate")
+    people = _first(booking, "numberOfPeople", "numPeople", "noOfPeople")
+    amount = _first(booking, "totalAmount", "totalPrice", "amount")
+    currency = booking.get("currency") or pkg.get("currency") or activity.get("currency") or "INR"
+
+    amount_str = f"{amount} {currency}" if amount is not None else "?"
+
+    return (
+        f"ref={ref} | {name} | status={status} | date={date} | "
+        f"people={people} | total={amount_str}"
+    )
+
+
 def slim_profile(profile: dict) -> dict:
     """Minimal user-profile dict for LLM personalization decisions."""
     prefs = profile.get("explicit_preferences") or {}
