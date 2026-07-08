@@ -137,6 +137,44 @@ async def get_available_offers_by_vendor(
     return response.get("data") or []
 
 
+#  Real per-traveler pricing (matches the live Add Members screen) 
+
+# Swabi's own valid participant types, confirmed from live activity data
+# (each activity carries an ageGroupDiscountPercent keyed by these).
+VALID_PARTICIPANT_TYPES = ("ADULT", "SENIOR", "CHILD", "INFANT")
+
+
+async def calculate_package_price(package_id: int, participant_type: str) -> dict:
+    """Real per-person price for one participant type, from
+    /package_booking/calculate_package_price. This factors in each
+    activity's age-group discount for that type (confirmed from a live
+    response: e.g. packageId=29 returns calculatedPrice=4000.0 for ADULT
+    even though it has 2 activities at 2000 each with 0% adult discount —
+    CHILD/SENIOR/INFANT would return a different number for the same
+    package). This is what the real Add Members screen calls as each
+    traveler is added, and is the ONLY correct way to get a real total —
+    price_per_unit * num_people from prepare_booking_tool is an estimate
+    only, since it ignores participant type entirely.
+
+    Returns {"calculated_price": float, "activity_ids": [...]} or
+    {"calculated_price": None} if the type is invalid or the call fails.
+    """
+    if participant_type not in VALID_PARTICIPANT_TYPES:
+        return {"calculated_price": None, "activity_ids": [],
+                "error": f"'{participant_type}' isn't a valid participant "
+                         f"type — must be one of {VALID_PARTICIPANT_TYPES}."}
+
+    response = await swabi_client.get(
+        f"/package_booking/calculate_package_price"
+        f"?packageId={package_id}&participantType={participant_type}"
+    )
+    data = response.get("data") or {}
+    return {
+        "calculated_price": data.get("calculatedPrice"),
+        "activity_ids":     data.get("activityIds") or [],
+    }
+
+
 #  Prepare-to-book summary (no write call) 
 
 async def prepare_package_booking(package_id: int, date_str: str, num_people: int) -> dict:

@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from app.services.swabi_client import swabi_client
 from app.core.token_budget import TOP_N_PACKAGES
 
@@ -6,6 +8,49 @@ async def get_package_by_id(package_id: int):
     return await swabi_client.get(
         f"/package/get_package_by_id?packageId={package_id}"
     )
+
+
+async def get_package_by_id_for_user_view(package_id: int, user_id: int):
+    """The real website's package-detail call — /package/get_package_by_id_for_user_view.
+    This is what fires when a user taps "View Details" on a package; unlike
+    get_package_by_id it's scoped to a userId (right before Add Members /
+    Book Package), and is the one to use whenever a logged-in user's own
+    context matters, not just get_package_by_id."""
+    return await swabi_client.get(
+        f"/package/get_package_by_id_for_user_view"
+        f"?packageId={package_id}&userId={user_id}"
+    )
+
+
+async def get_package_list_by_date(
+    date_str:    str,
+    country:     str = "",
+    state:       str = "",
+    search:      str = "",
+    days:        str = "",
+    price:       str = "",
+    user_id:     int = None,
+    page_number: int = 0,
+    page_size:   int = 6,
+):
+    """The real website's Holiday Packages search — /package/get_package_list_by_date.
+    Server-side filtering by date/country/state/price/days with pagination,
+    exactly matching what the app calls when a user searches. This is the
+    endpoint to use for anything resembling the real search flow; the older
+    category/all-vendors endpoints below remain only for category-only
+    browsing that isn't tied to a specific date/location search."""
+    params = (
+        f"?pageNumber={page_number}&pageSize={page_size}"
+        f"&search={quote(search or '')}"
+        f"&date={date_str}"
+        f"&days={days or ''}"
+        f"&price={price or ''}"
+        f"&country={quote(country or '')}"
+        f"&state={quote(state or '')}"
+    )
+    if user_id is not None:
+        params += f"&userId={user_id}"
+    return await swabi_client.get(f"/package/get_package_list_by_date{params}")
 
 
 async def get_all_packages():

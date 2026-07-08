@@ -545,6 +545,7 @@
 # ]
 
 import json
+from datetime import datetime
 from typing import Annotated, Optional, Union
 
 from langchain.tools import tool
@@ -558,6 +559,8 @@ from app.tools.activity_tools import (
 from app.tools.package_tools import (
     search_packages,
     get_package_by_id,
+    get_package_by_id_for_user_view,
+    get_package_list_by_date,
 )
 from app.tools.recommendation_tools import (
     recommend_trip,
@@ -571,6 +574,8 @@ from app.tools.booking_tools import (
     prepare_package_booking,
     prepare_activity_booking,
     get_available_offers,
+    calculate_package_price,
+    VALID_PARTICIPANT_TYPES,
 )
 from app.tools.member_tools import (
     get_countries,
@@ -685,26 +690,100 @@ async def activity_category_list_tool():
 #  Package tools 
 
 @tool
-async def package_search_tool(category: str):
-    """Search packages by category. Use trip_recommendation_tool when
-    location, budget, or duration is also given."""
+async def package_search_tool(
+    agent_state: Annotated[AgentState, InjectedState],
+    date: Optional[str] = None,
+    country: Optional[str] = None,
+    state: Optional[str] = None,
+    max_price: Optional[Union[float, str]] = None,
+    duration_days: Optional[Union[int, str]] = None,
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    page_number: Union[int, str] = 0,
+):
+    """Search packages exactly like the real Holiday Packages screen: by
+    date, country, state, price, and/or free-text search — calls Swabi's
+    live get_package_list_by_date endpoint (server-side filtering,
+    paginated 6 at a time, same as the app). This is the primary search
+    tool; use it whenever the user gives any of date/country/state/price/
+    duration, since that's what the real search bar does.
 
-    result   = await search_packages(category=category)
-    packages = (result.get("data") or {}).get("content", [])
-    capped   = packages[:TOP_N_PACKAGES]
-    lines    = [summarize_package(p) for p in capped]
-    if len(packages) > TOP_N_PACKAGES:
-        lines.append(f"... +{len(packages) - TOP_N_PACKAGES} more packages")
-    return "\n\n".join(lines) or "No packages found."
+    date defaults to today (DD-MM-YYYY) if not given, matching the app's
+    own default when a user first opens Holiday Packages.
+
+    Pass category alone (with everything else omitted) for a pure
+    category browse instead — that falls back to the older
+    category-only endpoint, since get_package_list_by_date has no
+    category filter of its own.
+
+    Results are capped and truncated for the chat context; tell the user
+    if more results exist so they can narrow the search.
+    """
+    if category and not any([date, country, state, max_price, duration_days, search]):
+        result   = await search_packages(category=category)
+        packages = (result.get("data") or {}).get("content", [])
+        capped   = packages[:TOP_N_PACKAGES]
+        lines    = [summarize_package(p) for p in capped]
+        if len(packages) > TOP_N_PACKAGES:
+            lines.append(f"... +{len(packages) - TOP_N_PACKAGES} more packages")
+        return "\n\n".join(lines) or "No packages found."
+
+    auth_user = agent_state.get("auth_user")
+    date_str  = date or datetime.now().strftime("%d-%m-%Y")
+
+    result = await get_package_list_by_date(
+        date_str=date_str,
+        country=country or "",
+        state=state or "",
+        search=search or "",
+        days=str(duration_days) if duration_days else "",
+        price=str(_to_float(max_price)) if max_price else "",
+        user_id=auth_user.user_id if auth_user else None,
+        page_number=_to_int(page_number) or 0,
+    )
+    data     = result.get("data") or {}
+    packages = data.get("content", [])
+    total    = data.get("totalElements", len(packages))
+
+    if not packages:
+        return f"No packages found for date={date_str}" + (
+            f", country={country}" if country else ""
+        ) + (f", state={state}" if state else "") + "."
+
+    lines = [summarize_package(p) for p in packages[:TOP_N_PACKAGES]]
+    if total > len(packages):
+        page_num = data.get("pageable", {}).get("pageNumber", 0)
+        total_pages = data.get("totalPages", "?")
+        lines.append(
+            f"... +{total - len(packages)} more package(s) available "
+            f"(page {page_num} of {total_pages} shown) — ask to see more or narrow the search."
+        )
+    return "\n\n".join(lines)
 
 
 @tool
-async def package_detail_tool(package_id: Union[int, str]):
-    """Full details for one package by numeric ID. Use after the user picks
-    a specific package from search results."""
+async def package_detail_tool(
+    package_id: Union[int, str],
+    agent_state: Annotated[AgentState, InjectedState],
+):
+    """Full details for one package by numeric ID — calls Swabi's real
+    get_package_by_id_for_user_view (what "View Details" calls on the real
+    website), scoped to the logged-in user when a session is authenticated.
+    Use after the user picks a specific package from search results, right
+    before checking availability / preparing a booking."""
 
-    result  = await get_package_by_id(_to_int(package_id))
-    package = result.get("data") or result
+    auth_user = agent_state.get("auth_user")
+    pid = _to_int(package_id)
+
+    if auth_user:
+        result  = await get_package_by_id_for_user_view(pid, auth_user.user_id)
+        package = result.get("data") or result
+    else:
+        # Guest fallback — real website flow assumes a logged-in user, but
+        # this keeps package browsing usable pre-login rather than failing.
+        result  = await get_package_by_id(pid)
+        package = result.get("data") or result
+
     return summarize_package(package, detail=True)
 
 
@@ -985,6 +1064,7 @@ async def country_states_tool(country: str):
 @tool
 async def add_members_tool(
     num_people: Union[int, str],
+    package_id: Union[int, str],
     state: Annotated[AgentState, InjectedState],
     members: Optional[str] = None,
 ):
@@ -993,33 +1073,49 @@ async def add_members_tool(
     from prepare_booking_tool, and right before they complete the
     booking themselves.
 
+    package_id: the package being booked. Needed here (not just earlier)
+    because each traveler's real price is calculated live per person,
+    exactly like the real Add Members screen — this replaces the flat
+    price_per_unit * num_people ESTIMATE from prepare_booking_tool with
+    the REAL total, since different participant types get different
+    per-activity discounts and a flat estimate ignores that entirely.
+
     Traveler 1 is ALWAYS the logged-in user and is auto-filled from
     their own Swabi account automatically — never invent, guess, or ask
     for their name/country/state, and never include them in `members`.
+    Traveler 1 defaults to participant_type ADULT unless the user says
+    otherwise (the account holder usually is one, but ask if unsure).
 
     members: a JSON array string of the OTHER travelers only (traveler
     2 onward), e.g. for num_people=2 this should contain exactly ONE
     entry: '[{"name": "Priya Sharma", "country": "India", "state":
-    "Delhi"}]'. Always pass it as a JSON string, not a native list. If
-    the user hasn't given you a later traveler's details yet, leave
-    them out of `members` and ask for them — don't invent placeholders
-    for anyone. country/state are validated against Swabi's live
-    lists — invalid ones are flagged, never silently accepted or
-    guessed.
+    "Delhi", "participant_type": "ADULT"}]'. Always pass it as a JSON
+    string, not a native list. participant_type must be one of ADULT,
+    SENIOR, CHILD, INFANT — ask the user if it's not given; never
+    assume ADULT for anyone but traveler 1. If the user hasn't given you
+    a later traveler's details yet, leave them out of `members` and ask
+    for them — don't invent placeholders for anyone. country/state are
+    validated against Swabi's live lists — invalid ones are flagged,
+    never silently accepted or guessed.
 
     This does not submit anything — it only prepares and validates the
-    traveler list for the user to review before they book."""
+    traveler list, with a real calculated total, for the user to review
+    before they book."""
 
     auth_user, error = _require_auth(state)
     if error:
         return error
+
+    pid = _to_int(package_id)
+    if pid is None:
+        return "package_id is required and must be a number."
 
     parsed_members = _parse_members_arg(members)
     if parsed_members is None:
         return (
             "Couldn't read the traveler list — pass members as a JSON "
             'array string, e.g. \'[{"name": "...", "country": "...", '
-            '"state": "..."}]\'.'
+            '"state": "...", "participant_type": "ADULT"}]\'.'
         )
 
     n = _to_int(num_people) or (len(parsed_members) + 1)
@@ -1040,10 +1136,11 @@ async def add_members_tool(
         or "Primary traveler (you)"
     )
     primary = {
-        "name":    primary_name,
-        "country": profile.get("country"),
-        "state":   profile.get("state"),
-        "mobile":  profile.get("mobile"),
+        "name":             primary_name,
+        "country":          profile.get("country"),
+        "state":            profile.get("state"),
+        "mobile":           profile.get("mobile"),
+        "participant_type": "ADULT",
     }
 
     warnings = []
@@ -1069,11 +1166,27 @@ async def add_members_tool(
 
     validated = []
     for i, m in enumerate(members_list[:n], start=1):
+        raw_type = (m.get("participant_type") or "").upper() or None
+        participant_type = raw_type
+        if raw_type and raw_type not in VALID_PARTICIPANT_TYPES:
+            warnings.append(
+                f"Traveler {i}: '{raw_type}' isn't a valid participant type "
+                f"({', '.join(VALID_PARTICIPANT_TYPES)}) — defaulted to ADULT, please confirm."
+            )
+            participant_type = "ADULT"
+        elif not raw_type and i > 1:
+            warnings.append(
+                f"Traveler {i}: no participant_type given — defaulted to ADULT, "
+                f"please confirm (pricing differs by type)."
+            )
+            participant_type = "ADULT"
+
         entry = {
-            "name":    m.get("name") or f"Traveler {i}",
-            "country": m.get("country"),
-            "state":   m.get("state"),
-            "mobile":  m.get("mobile"),
+            "name":             m.get("name") or f"Traveler {i}",
+            "country":          m.get("country"),
+            "state":            m.get("state"),
+            "mobile":           m.get("mobile"),
+            "participant_type": participant_type,
         }
         if entry["country"]:
             states = await get_states_for_country(entry["country"])
@@ -1088,16 +1201,46 @@ async def add_members_tool(
 
     still_needed = max(n - len(validated), 0)
 
+    # Real per-person pricing, one calculate_package_price call per
+    # DISTINCT participant type actually present (not one call per
+    # traveler) — mathematically identical to the real Add Members
+    # screen's per-traveler recalculation, since two ADULT travelers cost
+    # the same per person, but this avoids redundant calls.
+    price_by_type = {}
+    total = 0.0
+    total_known = True
+    for entry in validated:
+        ptype = entry["participant_type"]
+        if ptype is None:
+            total_known = False
+            continue
+        if ptype not in price_by_type:
+            priced = await calculate_package_price(pid, ptype)
+            price_by_type[ptype] = priced.get("calculated_price")
+        unit_price = price_by_type[ptype]
+        if unit_price is None:
+            total_known = False
+        else:
+            total += unit_price
+        entry["calculated_price"] = unit_price
+
     return json.dumps({
-        "members":          validated,
-        "members_provided": len(validated),
-        "members_needed":   n,
-        "still_needed":     still_needed,
-        "warnings":         warnings,
+        "package_id":        pid,
+        "members":           validated,
+        "members_provided":  len(validated),
+        "members_needed":    n,
+        "still_needed":      still_needed,
+        "price_by_participant_type": price_by_type,
+        "calculated_total":  total if total_known else None,
+        "total_is_estimate": not total_known,
+        "warnings":          warnings,
         "next_step": (
-            "Once all travelers are added and any warnings are resolved, "
-            "complete the booking yourself in the Swabi app/website — "
-            "the agent doesn't submit it."
+            "This calculated_total is the REAL total (from Swabi's own "
+            "pricing, not an estimate) once every traveler has a "
+            "participant_type and total_is_estimate is false. Once all "
+            "travelers are added and any warnings are resolved, complete "
+            "the booking yourself in the Swabi app/website — the agent "
+            "doesn't submit it."
         ),
     }, default=str)
 
